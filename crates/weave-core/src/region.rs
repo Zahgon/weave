@@ -1,6 +1,5 @@
 use sem_core::model::entity::SemanticEntity;
 
-/// A region of a file — either an entity or the interstitial content between entities.
 #[derive(Debug, Clone)]
 pub enum FileRegion {
     Entity(EntityRegion),
@@ -8,20 +7,8 @@ pub enum FileRegion {
 }
 
 impl FileRegion {
-    pub(crate) fn content(&self) -> &str {
-        match self {
-            FileRegion::Entity(e) => &e.content,
-            FileRegion::Interstitial(i) => &i.content,
-        }
-    }
+    pub(crate) fn content(&self) -> &str { panic!("STUB: not implemented") }
 
-    /// Test-only, and private: the region's key is read by this module's own
-    /// tests and by nothing else in any crate. Every production reader already
-    /// has the region *and* knows which arm it wanted — `merge_interstitials`
-    /// matches on `FileRegion::Interstitial` to get the position key it groups
-    /// by — so a public accessor that erases the distinction between an entity
-    /// id and a position key was authority to confuse the two, granted to
-    /// callers who never asked for it.
     #[cfg(test)]
     fn key(&self) -> &str {
         match self {
@@ -30,8 +17,6 @@ impl FileRegion {
         }
     }
 
-    /// Test-only, and private, for the same reason: the one-line `matches!` it
-    /// wraps is written out at the two production sites that care.
     #[cfg(test)]
     fn is_entity(&self) -> bool {
         matches!(self, FileRegion::Entity(_))
@@ -50,189 +35,16 @@ pub struct EntityRegion {
 
 #[derive(Debug, Clone)]
 pub struct InterstitialRegion {
-    /// A key like "before:entity_id" or "after:entity_id" or "file_header" / "file_footer"
+    
     pub position_key: String,
     pub content: String,
 }
 
-/// Extract ordered regions from file content using the given entities.
-///
-/// Entities must be from the same file. The function splits the file into
-/// alternating interstitial and entity regions based on line ranges.
-pub fn extract_regions(content: &str, entities: &[SemanticEntity]) -> Vec<FileRegion> {
-    if entities.is_empty() {
-        // Entire file is one interstitial region
-        return vec![FileRegion::Interstitial(InterstitialRegion {
-            position_key: "file_only".to_string(),
-            content: content.to_string(),
-        })];
-    }
+pub fn extract_regions(content: &str, entities: &[SemanticEntity]) -> Vec<FileRegion> { panic!("STUB: not implemented") }
 
-    let lines: Vec<&str> = content.lines().collect();
-    let total_lines = lines.len();
+fn find_leading_comment_start(lines: &[&str], entity_start: usize, min_line: usize) -> usize { panic!("STUB: not implemented") }
 
-    // Sort entities by start_line (they should already be sorted, but be safe)
-    let mut sorted_entities: Vec<&SemanticEntity> = entities.iter().collect();
-    sorted_entities.sort_by_key(|e| e.start_line);
-
-    let mut regions: Vec<FileRegion> = Vec::new();
-    let mut current_line: usize = 0; // 0-indexed into lines array
-
-    for (i, entity) in sorted_entities.iter().enumerate() {
-        // Entity start_line and end_line are 1-based from sem-core
-        let entity_start = entity.start_line.saturating_sub(1); // convert to 0-based
-        let entity_end = entity.end_line; // end_line is inclusive, so this is exclusive in 0-based
-
-        // Comment bundling: scan backwards from entity_start to find leading doc comments.
-        // These comments (JSDoc, Rust ///, Python docstrings, Java /** */) should be part
-        // of the entity region, not the interstitial gap.
-        let bundled_start = find_leading_comment_start(&lines, entity_start, current_line);
-
-        // Interstitial before this entity (excluding bundled comments)
-        if current_line < bundled_start {
-            let interstitial_content = join_lines(&lines[current_line..bundled_start]);
-            let position_key = if i == 0 {
-                "file_header".to_string()
-            } else {
-                format!("between:{}:{}", sorted_entities[i - 1].id, entity.id)
-            };
-            regions.push(FileRegion::Interstitial(InterstitialRegion {
-                position_key,
-                content: interstitial_content,
-            }));
-        }
-
-        // Entity region — includes bundled leading comments
-        let entity_end_clamped = entity_end.min(total_lines);
-        let entity_content = if bundled_start < entity_end_clamped {
-            join_lines(&lines[bundled_start..entity_end_clamped])
-        } else {
-            entity.content.clone()
-        };
-
-        regions.push(FileRegion::Entity(EntityRegion {
-            entity_id: entity.id.clone(),
-            entity_name: entity.name.clone(),
-            entity_type: entity.entity_type.clone(),
-            content: entity_content,
-            start_line: entity.start_line,
-            end_line: entity.end_line,
-        }));
-
-        current_line = entity_end_clamped;
-    }
-
-    // Interstitial after last entity (file footer)
-    if current_line < total_lines {
-        let footer_content = join_lines(&lines[current_line..total_lines]);
-        regions.push(FileRegion::Interstitial(InterstitialRegion {
-            position_key: "file_footer".to_string(),
-            content: footer_content,
-        }));
-    }
-
-    // Handle trailing newline — if original content ends with newline and our last region doesn't
-    if content.ends_with('\n') {
-        if let Some(last) = regions.last() {
-            if !last.content().ends_with('\n') {
-                match regions.last_mut() {
-                    Some(FileRegion::Entity(e)) => e.content.push('\n'),
-                    Some(FileRegion::Interstitial(i)) => i.content.push('\n'),
-                    None => {}
-                }
-            }
-        }
-    }
-
-    regions
-}
-
-/// Find the start of leading doc comments before an entity.
-///
-/// Walks backwards from `entity_start` to find contiguous doc comment lines.
-/// Stops at `min_line` (the end of the previous entity/region).
-///
-/// Recognizes:
-/// - `///` and `//!` (Rust doc comments)
-/// - `/** ... */` (JSDoc, JavaDoc block comments)
-/// - `# comment` above Python defs (not always doc, but commonly associated)
-/// - Decorators/annotations (already handled by entity extraction, but defensive)
-///
-/// Termination is structural: the walk is a `rev()` range over
-/// `min_line..entity_start`, so every iteration consumes one line and the loop
-/// is bounded by the number of lines above the entity. It used to be a
-/// hand-rolled `loop` that stepped with `line_idx.saturating_sub(1)` and exited
-/// on `line_idx < min_line`. At `line_idx == 0` with `min_line == 0` the step is
-/// a no-op and the exit condition is unreachable, so any file whose first line
-/// is blank and whose first entity starts on line 2 spun forever. A counter
-/// can only be trusted to reach its bound if something forces it to move —
-/// here the iterator does.
-fn find_leading_comment_start(lines: &[&str], entity_start: usize, min_line: usize) -> usize {
-    if entity_start == 0 || entity_start <= min_line {
-        return entity_start;
-    }
-
-    let mut comment_start = entity_start;
-    let mut in_block_comment = false;
-
-    for line_idx in (min_line..entity_start).rev() {
-        let trimmed = lines[line_idx].trim();
-
-        if trimmed.is_empty() {
-            // Allow one blank line between comment and entity
-            // But don't extend past it
-            if comment_start == entity_start && line_idx + 1 == entity_start {
-                // Blank line immediately before entity — skip it, check further up
-                continue;
-            }
-            break;
-        }
-
-        // Check for end of block comment (scanning backwards, so */ means start of block)
-        if trimmed.ends_with("*/") && !trimmed.starts_with("/*") {
-            // This is the end of a block comment — scan backwards for /*
-            in_block_comment = true;
-            comment_start = line_idx;
-            continue;
-        }
-
-        if in_block_comment {
-            if trimmed.starts_with("/*") || trimmed.starts_with("/**") {
-                comment_start = line_idx;
-                in_block_comment = false;
-            }
-            // Continue scanning backwards through block comment
-            continue;
-        }
-
-        // Single-line doc comment patterns
-        if trimmed.starts_with("///")    // Rust doc comment
-            || trimmed.starts_with("//!") // Rust inner doc comment
-            || trimmed.starts_with("/**") // JSDoc/JavaDoc one-liner
-            || trimmed.starts_with("* ")  // JSDoc/JavaDoc continuation
-            || trimmed == "*"             // Empty JSDoc line
-            || trimmed == "*/"
-        // End of JSDoc block
-        {
-            comment_start = line_idx;
-            continue;
-        }
-
-        // Not a comment line — stop
-        break;
-    }
-
-    comment_start
-}
-
-fn join_lines(lines: &[&str]) -> String {
-    if lines.is_empty() {
-        return String::new();
-    }
-    let mut result = lines.join("\n");
-    result.push('\n');
-    result
-}
+fn join_lines(lines: &[&str]) -> String { panic!("STUB: not implemented") }
 
 #[cfg(test)]
 mod tests {
@@ -263,14 +75,12 @@ export function world() {
 
         let regions = extract_regions(content, &entities);
 
-        // Should have interstitial + entity regions
         assert!(
             regions.len() >= 2,
             "Should have multiple regions, got {}",
             regions.len()
         );
 
-        // Verify entities are present
         let entity_regions: Vec<_> = regions
             .iter()
             .filter_map(|r| match r {
@@ -297,7 +107,7 @@ export function world() {
 
     #[test]
     fn test_comment_bundling_jsdoc() {
-        // JSDoc comment should be bundled with the following function entity
+        
         let content = r#"import { foo } from 'bar';
 
 /**
@@ -323,7 +133,6 @@ export function world() {
             .expect("Should find hello");
         let regions = extract_regions(content, &entities);
 
-        // Find the hello entity region
         let hello_region = regions
             .iter()
             .find(|r| match r {
@@ -332,7 +141,6 @@ export function world() {
             })
             .expect("Should find hello region");
 
-        // The entity region should include the JSDoc comment
         assert!(
             hello_region.content().contains("/**"),
             "hello region should include JSDoc comment. Content: {:?}",
@@ -344,7 +152,6 @@ export function world() {
             hello_region.content(),
         );
 
-        // The interstitial before hello should NOT contain the JSDoc
         let interstitials: Vec<_> = regions.iter().filter(|r| !r.is_entity()).collect();
         for inter in &interstitials {
             assert!(
